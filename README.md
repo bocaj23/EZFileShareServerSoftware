@@ -1,2 +1,0 @@
-# EZFileShareServerSoftware
- self explanitory
