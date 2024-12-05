@@ -4,6 +4,7 @@ import threading
 import hashlib
 import psycopg2
 import bcrypt
+import json
 
 HOST = "0.0.0.0"  
 PORT = 6223
@@ -11,14 +12,19 @@ CERTFILE = "cert.pem"
 KEYFILE = "key.pem"
 BUFFER_SIZE = 4096
 MASTER_PEM = "master.pem"
+CONFIG_FILE = "db_conf.json"
 
-DB_CONFIG = {
-    "dbname": "postgres",
-    "user": "ezfileshareadmin",
-    "password": "poopBALLS123",
-    "host": "ezfileshare-db.cbkqiues0a29.us-east-1.rds.amazonaws.com",  
-    "port": 5432          
-}
+def load_db_config():
+    """Loades the db config"""
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"Error: Config file '{CONFIG_FILE}' not found")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Error: Failed to parse JSON in '{CONFIG_FILE}': {e}")
+        return None
 
 def create_tls_context():
     """Creates a TLS context."""
@@ -40,8 +46,11 @@ def generate_hash(identifier):
 
 def connect_to_db():
     """Connects to the db"""
+    db_config = load_db_config()
+    if not db_config:
+        return None
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = psycopg2.connect(**db_config)
         return conn
     except psycopg2.Error as e:
         print(f"Database connection error: {e}")
