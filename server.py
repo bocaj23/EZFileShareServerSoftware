@@ -135,12 +135,12 @@ def handle_client(conn, addr):
             return
 
         parts = data.split()
-        if len(parts) != 4:
+        if len(parts) != 6:
             response = "ERROR: Invalid payload formatEOF"
             conn.sendall(response.encode("utf-8"))
             return
 
-        endpoint, username, password, identifier = parts
+        endpoint, username, password, identifier, ip, port = parts
         hashed_identifier = generate_hash(identifier)
         if not hashed_identifier:
             response = "ERROR: Server configuration issueEOF"
@@ -150,7 +150,7 @@ def handle_client(conn, addr):
         if endpoint.upper() == "LOGIN":
             response = handle_login(username, password, hashed_identifier) + "EOF"
         elif endpoint.upper() == "REGISTER":
-            response = handle_register(username, password, hashed_identifier) + "EOF"
+            response = handle_register(username, password, hashed_identifier, ip, port) + "EOF"
         else:
             response = "ERROR: Unknown endpointEOF"
 
