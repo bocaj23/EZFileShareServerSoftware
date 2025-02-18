@@ -280,6 +280,8 @@ def handle_client(conn, addr):
 def start_server():
     """Starts the server."""
     context = create_tls_context()
+    context.load_cert_chain(certfile='/etc/letsencrypt/live/forestgardenshop.com/fullchain.pem',
+                            keyfile='/etc/letsencrypt/live/forestgardenshop.com/privkey.pem')
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
         server_socket.bind((HOST, PORT))
         server_socket.listen(5)
