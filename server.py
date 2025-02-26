@@ -286,7 +286,7 @@ def handle_client(conn, addr):
             recipiant_port = parts[5]
             response = handle_initiate(username, recipiant_ip, recipiant_port)
         elif endpoint == "LOGIN":
-            if len(parts) != 6:
+            if len(parts) != 7:
                 response = "ERROR: Invalid LOGIN payload formatEOF"
             else:
                 _, username, password, identifier, ip, port = parts
