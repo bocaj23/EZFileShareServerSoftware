@@ -253,6 +253,110 @@ def handle_update_settings(username, settings):
     finally:
         conn.close()
 
+def handle_list_friends(username):
+    """Returns a list of friends."""
+    conn = connect_to_db()
+    if not conn:
+        return "ERROR: Database connection failed"
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT user1, user2 FROM friends WHERE (user1 = %s OR user2 = %s) AND status = 'accepted'",
+                (username, username)
+            )
+            friends = cur.fetchall()
+
+            if not friends:
+                return "LIST-FRIENDS EMPTY"
+
+            friend_list = [user[0] if user[0] != username else user[1] for user in friends]
+            return f"LIST-FRIENDS SUCCESS {json.dumps(friend_list)}EOF"
+    except psycopg2.Error as e:
+        print(f"Database query error: {e}")
+        return "ERROR: Database query failed"
+    finally:
+        conn.close()
+
+def handle_remove_friend(username, friend_username):
+    """Handles removing a friend."""
+    conn = connect_to_db()
+    if not conn:
+        return "ERROR: Database connection failed"
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM friends WHERE (user1 = %s AND user2 = %s) OR (user1 = %s AND user2 = %s) AND status = 'accepted'",
+                (username, friend_username, friend_username, username)
+            )
+            if cur.rowcount == 0:
+                return "ERROR: No existing friendship found"
+
+            conn.commit()
+            return "REMOVE-FRIEND SUCCESS"
+    except psycopg2.Error as e:
+        print(f"Database query error: {e}")
+        return "ERROR: Database query failed"
+    finally:
+        conn.close()
+
+def handle_accept_friend(username, friend_username):
+    """Handles accepting a friend request."""
+    conn = connect_to_db()
+    if not conn:
+        return "ERROR: Database connection failed"
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE friends SET status = 'accepted' WHERE user1 = %s AND user2 = %s AND status = 'pending'",
+                (friend_username, username)
+            )
+            if cur.rowcount == 0:
+                return "ERROR: No pending friend request found"
+
+            conn.commit()
+            return "ACCEPT-FRIEND SUCCESS"
+    except psycopg2.Error as e:
+        print(f"Database query error: {e}")
+        return "ERROR: Database query failed"
+    finally:
+        conn.close()
+
+def handle_send_friend(username, friend_username):
+    """Handles sending a friend request."""
+    conn = connect_to_db()
+    if not conn:
+        return "ERROR: Database connection failed"
+
+    try:
+        with conn.cursor() as cur:
+            # check if the users exist
+            cur.execute("SELECT username FROM users WHERE username = %s", (friend_username,))
+            if not cur.fetchone():
+                return "ERROR: User does not exist"
+
+            # check if a friendship already exists
+            cur.execute(
+                "SELECT status FROM friends WHERE (user1 = %s AND user2 = %s) OR (user1 = %s AND user2 = %s)",
+                (username, friend_username, friend_username, username)
+            )
+            result = cur.fetchone()
+
+            if result:
+                return "ERROR: Friendship already exists or pending"
+
+            # insert new friend request
+            cur.execute("INSERT INTO friends (user1, user2, status) VALUES (%s, %s, 'pending')",
+                        (username, friend_username))
+            conn.commit()
+            return "SEND-FRIEND SUCCESS"
+    except psycopg2.Error as e:
+        print(f"Database query error: {e}")
+        return "ERROR: Database query failed"
+    finally:
+        conn.close()
 
 def handle_client(conn, addr):
     """Handles an incoming client connection."""
@@ -300,7 +404,6 @@ def handle_client(conn, addr):
                     settings_json = json.loads(settings_raw)
                 except json.JSONDecodeError:
                     response = "Error: json is bad"
-                print(settings)
                 hashed_identifier = generate_hash(identifier)
                 if not hashed_identifier:
                     response = "ERROR: Server configuration issueEOF"
@@ -315,7 +418,7 @@ def handle_client(conn, addr):
             else:
                 _, username, _, _, _, _, *extra = parts
                 settings_raw = "".join(extra)
-                settings_fixed = settings_raw.strip('"')  # Remove extra surrounding quotes
+                settings_fixed = settings_raw.strip('"')
                 settings_fixed = settings_fixed.replace("'", "\"")
                 try:
                     settings_json = json.loads(settings_fixed)
