@@ -131,25 +131,20 @@ def handle_login(username, password, hashed_identifier):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT password, identifier, settings FROM users WHERE username = %s",
+                "SELECT password, identifier FROM users WHERE username = %s",
                 (username,)
             )
             result = cur.fetchone()
             if not result:
                 return "ERROR: User not found"
 
-            stored_password, stored_identifier, settings_from_db = result
+            stored_password, stored_identifier = result
 
             if not bcrypt.checkpw(password.encode("utf-8"), stored_password.encode("utf-8")):
                 return "ERROR: Invalid credentials"
+                    
 
-            if stored_identifier != hashed_identifier:
-                return "ERROR: Invalid credentials"
-            
-            if not settings_from_db:
-                settings_from_db = json.dumps([])            
-
-            return f"Login successful: {settings_from_db}"
+            return "Login successful"
     except psycopg2.Error as e:
         print(f"Database query error: {e}")
         return "ERROR: Database query failed"
@@ -240,11 +235,10 @@ def handle_update_settings(username, settings):
         return "Error: db connection dailed"
 
     try:
-        settings_json = json.loads(settings)
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE users SET settings = %s WHERE username = %s",
-                (json.dumps(settings_json), username)
+                (json.dumps(settings), username)
             )
             conn.commit()
 
@@ -286,32 +280,49 @@ def handle_client(conn, addr):
             recipiant_port = parts[5]
             response = handle_initiate(username, recipiant_ip, recipiant_port)
         elif endpoint == "LOGIN":
-            if len(parts) != 7:
+            print(f"length of parts: {len(parts)}")
+            if len(parts) < 6:
                 response = "ERROR: Invalid LOGIN payload formatEOF"
             else:
-                _, username, password, identifier, ip, port = parts
+                _, username, password, identifier, ip, port, *extra = parts
                 hashed_identifier = generate_hash(identifier)
                 if not hashed_identifier:
                     response = "ERROR: Server configuration issueEOF"
                 else:
                     response = handle_login(username, password, hashed_identifier) + "EOF"
         elif endpoint == "REGISTER":
-            if len(parts) != 7:
+            if len(parts) < 6:
                 response = "ERROR: Invalid REGISTER payload formatEOF"
             else:
-                _, username, password, identifier, ip, port, settings = parts
+                _, username, password, identifier, ip, port, *extra = parts
+                settings_raw = "".join(extra)
+                try:
+                    settings_json = json.loads(settings_raw)
+                except json.JSONDecodeError:
+                    response = "Error: json is bad"
+                print(settings)
                 hashed_identifier = generate_hash(identifier)
                 if not hashed_identifier:
                     response = "ERROR: Server configuration issueEOF"
                 else:
-                    response = handle_register(username, password, hashed_identifier, ip, port) + "EOF"
+                    response = handle_register(username, password, hashed_identifier, ip, port, json.dumps(settings_json)) + "EOF"
         elif endpoint == "GET-SETTINGS":
             username = parts[1]
             response = handle_get_settings(username)
         elif endpoint == "UPDATE-SETTINGS":
-            username = parts[1]
-            settings = parts[6]
-            response = handle_update_settings(username, settings)
+            if len(parts) < 3:
+                response = "Error: invalid update settings packet format"
+            else:
+                _, username, _, _, _, _, *extra = parts
+                settings_raw = "".join(extra)
+                settings_fixed = settings_raw.strip('"')  # Remove extra surrounding quotes
+                settings_fixed = settings_fixed.replace("'", "\"")
+                try:
+                    settings_json = json.loads(settings_fixed)
+                    print(settings_json)
+                    response = handle_update_settings(username, settings_json)
+                except json.JSONDecodeError:
+                    response = "Error: json is bad"
         else:
             response = "ERROR: Unknown error/invalid packet format"
 
