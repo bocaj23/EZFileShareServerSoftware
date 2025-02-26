@@ -262,7 +262,7 @@ def handle_list_friends(username):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT user1, user2 FROM friends WHERE (user1 = %s OR user2 = %s) AND status = 'accepted'",
+                "SELECT requester, addresse, status FROM friends WHERE (requester = %s OR addresse = %s) AND (status = 'accepted' OR status = 'pending')",
                 (username, username)
             )
             friends = cur.fetchall()
@@ -270,8 +270,11 @@ def handle_list_friends(username):
             if not friends:
                 return "LIST-FRIENDS EMPTY"
 
-            friend_list = [user[0] if user[0] != username else user[1] for user in friends]
-            return f"LIST-FRIENDS SUCCESS {json.dumps(friend_list)}EOF"
+            friend_list = []
+            for requester, addresse, status in friends:
+                friend_username = requester if requester != username else addresse
+                friend_list.append({"username": friend_username, "status": status})
+            return f"LIST-FRIENDS SUCCESS {json.dumps(friend_list, ensure_ascii=False)}EOF"
     except psycopg2.Error as e:
         print(f"Database query error: {e}")
         return "ERROR: Database query failed"
@@ -287,7 +290,7 @@ def handle_remove_friend(username, friend_username):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM friends WHERE (user1 = %s AND user2 = %s) OR (user1 = %s AND user2 = %s) AND status = 'accepted'",
+                "DELETE FROM friends WHERE (requester = %s AND addresse = %s) OR (requester = %s AND addresse = %s) AND status = 'accepted'",
                 (username, friend_username, friend_username, username)
             )
             if cur.rowcount == 0:
@@ -310,7 +313,7 @@ def handle_accept_friend(username, friend_username):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE friends SET status = 'accepted' WHERE user1 = %s AND user2 = %s AND status = 'pending'",
+                "UPDATE friends SET status = 'accepted' WHERE addresse = %s AND requester = %s AND status = 'pending'",
                 (friend_username, username)
             )
             if cur.rowcount == 0:
@@ -333,22 +336,27 @@ def handle_send_friend(username, friend_username):
     try:
         with conn.cursor() as cur:
             # check if the users exist
+            friend_username = friend_username.strip()
+            print(repr(friend_username))
             cur.execute("SELECT username FROM users WHERE username = %s", (friend_username,))
             if not cur.fetchone():
                 return "ERROR: User does not exist"
 
             # check if a friendship already exists
             cur.execute(
-                "SELECT status FROM friends WHERE (user1 = %s AND user2 = %s) OR (user1 = %s AND user2 = %s)",
+                "SELECT status FROM friends WHERE (requester = %s AND addresse = %s) OR (requester = %s AND addresse = %s)",
                 (username, friend_username, friend_username, username)
             )
             result = cur.fetchone()
 
             if result:
+                status = result[0]
+                if status == "pending":
+                    return handle_accept_friend(username, friend_username)
                 return "ERROR: Friendship already exists or pending"
 
             # insert new friend request
-            cur.execute("INSERT INTO friends (user1, user2, status) VALUES (%s, %s, 'pending')",
+            cur.execute("INSERT INTO friends (requester, addresse, status) VALUES (%s, %s, 'pending')",
                         (username, friend_username))
             conn.commit()
             return "SEND-FRIEND SUCCESS"
@@ -426,6 +434,26 @@ def handle_client(conn, addr):
                     response = handle_update_settings(username, settings_json)
                 except json.JSONDecodeError:
                     response = "Error: json is bad"
+        elif endpoint == "SEND-FRIEND":
+            if len(parts) < 2:
+                response = "ERROR: invalid SEND-FRIEND packet format"
+            else:
+                username = parts[1]
+                friend_username = parts[6]
+                response = handle_send_friend(username, friend_username)
+        elif endpoint == "REMOVE-FRIEND":
+            if len(parts) < 2:
+                response = "ERROR: invalid REMOVE-FRIEND packet format"
+            else:
+                username = parts[1]
+                friend_username = parts[6]
+                response = handle_remove_friend(username, friend_username)
+        elif endpoint == "LIST-FRIENDS":
+            if len(parts) < 1:
+                response = "ERROR: invalid LIST-FRIENDS packet format"
+            else:
+                username = parts[1]
+                response = handle_list_friends(username)
         else:
             response = "ERROR: Unknown error/invalid packet format"
 
