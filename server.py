@@ -131,29 +131,32 @@ def handle_login(username, password, hashed_identifier):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT password, identifier FROM users WHERE username = %s",
+                "SELECT password, identifier, settings FROM users WHERE username = %s",
                 (username,)
             )
             result = cur.fetchone()
             if not result:
                 return "ERROR: User not found"
 
-            stored_password, stored_identifier = result
+            stored_password, stored_identifier, settings_from_db = result
 
             if not bcrypt.checkpw(password.encode("utf-8"), stored_password.encode("utf-8")):
                 return "ERROR: Invalid credentials"
 
             if stored_identifier != hashed_identifier:
                 return "ERROR: Invalid credentials"
+            
+            if not settings_from_db:
+                settings_from_db = json.dumps([])            
 
-            return "Login successful"
+            return f"Login successful: {settings_from_db}"
     except psycopg2.Error as e:
         print(f"Database query error: {e}")
         return "ERROR: Database query failed"
     finally:
         conn.close()
 
-def handle_register(username, password, hashed_identifier, ip, port):
+def handle_register(username, password, hashed_identifier, ip, port, settings):
     """Handles the registration endpoint."""
     conn = connect_to_db()
     if not conn:
@@ -179,8 +182,8 @@ def handle_register(username, password, hashed_identifier, ip, port):
             hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
 
             cur.execute(
-                "INSERT INTO users (username, password, identifier, ip, port) VALUES (%s, %s, %s, %s, %s)",
-                (username, hashed_password.decode("utf-8"), hashed_identifier, encrypted_ip, encrypted_port)
+                "INSERT INTO users (username, password, identifier, ip, port, settings) VALUES (%s, %s, %s, %s, %s, %s)",
+                (username, hashed_password.decode("utf-8"), hashed_identifier, encrypted_ip, encrypted_port, settings)
             )
             conn.commit()
             return "Register successful"
@@ -209,6 +212,54 @@ def handle_initiate(username, recipiant_ip, recipiant_port):
         print(f"[ERROR] An error occurred: {e}")
         return None
 
+def handle_get_settings(username):
+    """Fetches the settings JSONB column for a user in the database."""
+    conn = connect_to_db()
+    if not conn:
+        return "ERROR: Database connection failedEOF"
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT settings FROM users WHERE username = %s", (username,))
+            result = cur.fetchone()
+
+            if not result or result[0] is None:
+                return "ERROR: No settings foundEOF"
+
+            return f"GET-SETTINGS SUCCESS {json.dumps(result[0])}"
+    except psycopg2.Error as e:
+        print(f"Database query error: {e}")
+        return "ERROR: Database query failedEOF"
+    finally:
+        conn.close()
+
+def handle_update_settings(username, settings):
+    """Updates the settings for a user in the database."""
+    conn = connect_to_db()
+    if not conn:
+        return "Error: db connection dailed"
+
+    try:
+        settings_json = json.loads(settings)
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET settings = %s WHERE username = %s",
+                (json.dumps(settings_json), username)
+            )
+            conn.commit()
+
+            if cur.rowcount == 0:
+                return "ERROR: user not found"
+
+            return "UPDATE-SETTINGS success"
+    except json.JSONDecodeError:
+            return "ERROR: invalid JSON format"
+    except psycopg2.Error as e:
+        return "ERROR: Database query fail"
+    finally:
+        conn.close()
+
+
 def handle_client(conn, addr):
     """Handles an incoming client connection."""
     try:
@@ -224,11 +275,6 @@ def handle_client(conn, addr):
         print(f"Chunk: {data}")
 
         parts = data.split()
-        if len(parts) != 6:
-            response = "ERROR: Invalid payload formatEOF"
-            conn.sendall(response.encode("utf-8"))
-            return
-
         endpoint = parts[0].upper()
 
         if endpoint == "GET":
@@ -250,17 +296,24 @@ def handle_client(conn, addr):
                 else:
                     response = handle_login(username, password, hashed_identifier) + "EOF"
         elif endpoint == "REGISTER":
-            if len(parts) != 6:
+            if len(parts) != 7:
                 response = "ERROR: Invalid REGISTER payload formatEOF"
             else:
-                _, username, password, identifier, ip, port = parts
+                _, username, password, identifier, ip, port, settings = parts
                 hashed_identifier = generate_hash(identifier)
                 if not hashed_identifier:
                     response = "ERROR: Server configuration issueEOF"
                 else:
                     response = handle_register(username, password, hashed_identifier, ip, port) + "EOF"
+        elif endpoint == "GET-SETTINGS":
+            username = parts[1]
+            response = handle_get_settings(username)
+        elif endpoint == "UPDATE-SETTINGS":
+            username = parts[1]
+            settings = parts[6]
+            response = handle_update_settings(username, settings)
         else:
-            response = "ERROR: Unknown endpointEOF"
+            response = "ERROR: Unknown error/invalid packet format"
 
         conn.sendall(response.encode("utf-8"))
         print(f"Response sent to {addr}: {response}")
