@@ -8,6 +8,7 @@ import json
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 import os
+import logging
 
 HOST = "0.0.0.0"  
 PORT = 6223
@@ -17,6 +18,13 @@ BUFFER_SIZE = 4096
 MASTER_PEM = "master.pem"
 CONFIG_FILE = "db_conf.json"
 AES_KEY_FILE = "enkey.pem"
+
+logging.basicConfig(
+            filename = "../EZFileShareLogManager/dummy_log.txt",
+            format="%(asctime)s - [%(levelname)s] - Endpoint: %(message)s - IP: %(ip)s",
+            level=logging.INFO,
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
 
 def load_aes_key():
     """Loads the AES key from a file."""
@@ -351,7 +359,7 @@ def handle_send_friend(username, friend_username):
 
             if result:
                 status = result[0]
-                if status == "pending":
+                if (status == "pending") and (username != friend_username):
                     return handle_accept_friend(username, friend_username)
                 return "ERROR: Friendship already exists or pending"
 
@@ -365,6 +373,9 @@ def handle_send_friend(username, friend_username):
         return "ERROR: Database query failed"
     finally:
         conn.close()
+
+def log(endpoint, addr):
+    logging.info(endpoint, extra={"ip": addr})
 
 def handle_client(conn, addr):
     """Handles an incoming client connection."""
@@ -384,14 +395,17 @@ def handle_client(conn, addr):
         endpoint = parts[0].upper()
 
         if endpoint == "GET":
+            log(endpoint, addr)
             username = parts[1]
             response = handle_get(username)
         elif endpoint == "INITIATE":
+            log(endpoint, addr)
             username = parts[1]
             recipiant_ip = parts[4]
             recipiant_port = parts[5]
             response = handle_initiate(username, recipiant_ip, recipiant_port)
         elif endpoint == "LOGIN":
+            log(endpoint, addr)
             print(f"length of parts: {len(parts)}")
             if len(parts) < 6:
                 response = "ERROR: Invalid LOGIN payload formatEOF"
@@ -403,6 +417,7 @@ def handle_client(conn, addr):
                 else:
                     response = handle_login(username, password, hashed_identifier) + "EOF"
         elif endpoint == "REGISTER":
+            log(endpoint, addr)
             if len(parts) < 6:
                 response = "ERROR: Invalid REGISTER payload formatEOF"
             else:
@@ -418,9 +433,11 @@ def handle_client(conn, addr):
                 else:
                     response = handle_register(username, password, hashed_identifier, ip, port, json.dumps(settings_json)) + "EOF"
         elif endpoint == "GET-SETTINGS":
+            log(endpoint, addr)
             username = parts[1]
             response = handle_get_settings(username)
         elif endpoint == "UPDATE-SETTINGS":
+            log(endpoint, addr)
             if len(parts) < 3:
                 response = "Error: invalid update settings packet format"
             else:
@@ -435,6 +452,7 @@ def handle_client(conn, addr):
                 except json.JSONDecodeError:
                     response = "Error: json is bad"
         elif endpoint == "SEND-FRIEND":
+            log(endpoint, addr)
             if len(parts) < 2:
                 response = "ERROR: invalid SEND-FRIEND packet format"
             else:
@@ -442,6 +460,7 @@ def handle_client(conn, addr):
                 friend_username = parts[6]
                 response = handle_send_friend(username, friend_username)
         elif endpoint == "REMOVE-FRIEND":
+            log(endpoint, addr)
             if len(parts) < 2:
                 response = "ERROR: invalid REMOVE-FRIEND packet format"
             else:
@@ -449,6 +468,7 @@ def handle_client(conn, addr):
                 friend_username = parts[6]
                 response = handle_remove_friend(username, friend_username)
         elif endpoint == "LIST-FRIENDS":
+            log(endpoint, addr)
             if len(parts) < 1:
                 response = "ERROR: invalid LIST-FRIENDS packet format"
             else:
