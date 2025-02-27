@@ -352,14 +352,14 @@ def handle_send_friend(username, friend_username):
 
             # check if a friendship already exists
             cur.execute(
-                "SELECT status FROM friends WHERE (requester = %s AND addresse = %s) OR (requester = %s AND addresse = %s)",
+                "SELECT requester, addresse, status FROM friends WHERE (requester = %s AND addresse = %s) OR (requester = %s AND addresse = %s)",
                 (username, friend_username, friend_username, username)
             )
             result = cur.fetchone()
 
             if result:
-                status = result[0]
-                if (status == "pending") and (username != friend_username):
+                requester, addresse, status = result
+                if (status == "pending") and username != requester:
                     return handle_accept_friend(username, friend_username)
                 return "ERROR: Friendship already exists or pending"
 
