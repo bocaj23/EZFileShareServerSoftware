@@ -314,62 +314,93 @@ def handle_remove_friend(username, friend_username):
 
 def handle_accept_friend(username, friend_username):
     """Handles accepting a friend request."""
-    conn = connect_to_db()
-    if not conn:
+    db_conn = connect_to_db()
+    if not db_conn:
         return "ERROR: Database connection failed"
 
     try:
-        with conn.cursor() as cur:
+        with db_conn.cursor() as cur:
+            # Check if a pending request exists
             cur.execute(
-                "UPDATE friends SET status = 'accepted' WHERE addresse = %s AND requester = %s AND status = 'pending'",
-                (friend_username, username)
+                "SELECT * FROM friends WHERE addresse = %s AND requester = %s AND status = 'pending'",
+                (username, friend_username)
             )
-            if cur.rowcount == 0:
+            result = cur.fetchone()
+
+            if not result:
+                print(f"DEBUG: No pending request found for {username} from {friend_username}")
                 return "ERROR: No pending friend request found"
 
-            conn.commit()
+            # Update status to 'accepted'
+            cur.execute(
+                "UPDATE friends SET status = 'accepted' WHERE addresse = %s AND requester = %s AND status = 'pending'",
+                (username, friend_username)
+            )
+
+            if cur.rowcount == 0:
+                print(f"DEBUG: Update failed for {username} accepting {friend_username}")
+                return "ERROR: Failed to accept friend request"
+
+            db_conn.commit()
+            print(f"DEBUG: {username} successfully accepted friend request from {friend_username}")
             return "ACCEPT-FRIEND SUCCESS"
     except psycopg2.Error as e:
         print(f"Database query error: {e}")
         return "ERROR: Database query failed"
     finally:
-        conn.close()
+        db_conn.close()
+
 
 def handle_send_friend(username, friend_username):
     """Handles sending a friend request."""
-    conn = connect_to_db()
-    if not conn:
+    db_conn = connect_to_db()
+    if not db_conn:
         return "ERROR: Database connection failed"
 
     try:
-        with conn.cursor() as cur:
-            # check if the users exist
+        with db_conn.cursor() as cur:
+            # Check if the user exists
             friend_username = friend_username.strip()
-            print(repr(friend_username))
             cur.execute("SELECT username FROM users WHERE username = %s", (friend_username,))
             if not cur.fetchone():
                 return "ERROR: User does not exist"
 
-            # check if a friendship already exists
+            # Check if a friend request or friendship already exists
             cur.execute(
-                "SELECT requester, addresse, status FROM friends WHERE (requester = %s AND addresse = %s) OR (requester = %s AND addresse = %s)",
+                "SELECT requester, addresse, status FROM friends "
+                "WHERE (requester = %s AND addresse = %s) "
+                "OR (requester = %s AND addresse = %s)",
                 (username, friend_username, friend_username, username)
             )
             result = cur.fetchone()
 
-            if not result:
-                return "ERROR: Friendship already exists or pending or doesnt exist"
+            if result:
+                requester, addressee, status = result
 
-            # insert new friend request
-            cur.execute("INSERT INTO friends (requester, addresse, status) VALUES (%s, %s, 'pending')",
-                        (username, friend_username))
-            conn.commit()
+                # If there is a pending request from the friend, accept it
+                if status == "pending" and requester == friend_username:
+                    return handle_accept_friend(username, friend_username)
+
+                # If already friends, return an error
+                if status == "accepted":
+                    return "ERROR: You are already friends"
+
+                # If a request is still pending, return an error
+                return "ERROR: Friend request already sent or pending"
+
+            # If no existing request, insert a new one
+            cur.execute(
+                "INSERT INTO friends (requester, addresse, status) VALUES (%s, %s, 'pending')",
+                (username, friend_username)
+            )
+            db_conn.commit()
             return "SEND-FRIEND SUCCESS"
     except psycopg2.Error as e:
         print(f"Database query error: {e}")
         return "ERROR: Database query failed"
     finally:
-        conn.close()
+        db_conn.close()
+
 
 def log(endpoint, addr):
     logging.info(endpoint, extra={"ip": addr})
@@ -457,12 +488,12 @@ def handle_client(conn, addr):
                 friend_username = parts[6]
 
                 # Check if a pending request exists from friend_username -> username
-                conn = connect_to_db()
-                if not conn:
+                db_conn = connect_to_db()
+                if not db_conn:
                     response = "ERROR: Database connection failed"
                 else:
                     try:
-                        with conn.cursor() as cur:
+                        with db_conn.cursor() as cur:
                             cur.execute(
                                 "SELECT status FROM friends WHERE requester = %s AND addresse = %s AND status = 'pending'",
                                 (friend_username, username)
@@ -478,7 +509,7 @@ def handle_client(conn, addr):
                         print(f"Database query error: {e}")
                         response = "ERROR: Database query failed"
                     finally:
-                        conn.close()
+                        db_conn.close()
         elif endpoint == "REMOVE-FRIEND":
             log(endpoint, addr)
             if len(parts) < 2:
