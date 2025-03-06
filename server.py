@@ -480,7 +480,7 @@ def handle_client(conn, addr):
                 except json.JSONDecodeError:
                     response = "Error: json is bad"
         elif endpoint == "SEND-FRIEND":
-            log(endpoint, addr)
+            #log(endpoint, addr)
             if len(parts) < 2:
                  response = "ERROR: invalid SEND-FRIEND packet format"
             else:
@@ -501,9 +501,11 @@ def handle_client(conn, addr):
                             result = cur.fetchone()
                             if result:
                                 # If a pending request exists, accept it
+                                log("ACCEPT-FRIEND", addr)
                                 response = handle_accept_friend(username, friend_username)
                             else:
                                 # Otherwise, send a new request
+                                log("SEND-FRIEND", addr)
                                 response = handle_send_friend(username, friend_username)
                     except psycopg2.Error as e:
                         print(f"Database query error: {e}")
