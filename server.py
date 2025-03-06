@@ -357,11 +357,8 @@ def handle_send_friend(username, friend_username):
             )
             result = cur.fetchone()
 
-            if result:
-                requester, addresse, status = result
-                if (status == "pending") and username != requester:
-                    return handle_accept_friend(username, friend_username)
-                return "ERROR: Friendship already exists or pending"
+            if not result:
+                return "ERROR: Friendship already exists or pending or doesnt exist"
 
             # insert new friend request
             cur.execute("INSERT INTO friends (requester, addresse, status) VALUES (%s, %s, 'pending')",
@@ -454,11 +451,34 @@ def handle_client(conn, addr):
         elif endpoint == "SEND-FRIEND":
             log(endpoint, addr)
             if len(parts) < 2:
-                response = "ERROR: invalid SEND-FRIEND packet format"
+                 response = "ERROR: invalid SEND-FRIEND packet format"
             else:
                 username = parts[1]
                 friend_username = parts[6]
-                response = handle_send_friend(username, friend_username)
+
+                # Check if a pending request exists from friend_username -> username
+                conn = connect_to_db()
+                if not conn:
+                    response = "ERROR: Database connection failed"
+                else:
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT status FROM friends WHERE requester = %s AND addresse = %s AND status = 'pending'",
+                                (friend_username, username)
+                                )
+                            result = cur.fetchone()
+                            if result:
+                                # If a pending request exists, accept it
+                                response = handle_accept_friend(username, friend_username)
+                            else:
+                                # Otherwise, send a new request
+                                response = handle_send_friend(username, friend_username)
+                    except psycopg2.Error as e:
+                        print(f"Database query error: {e}")
+                        response = "ERROR: Database query failed"
+                    finally:
+                        conn.close()
         elif endpoint == "REMOVE-FRIEND":
             log(endpoint, addr)
             if len(parts) < 2:
