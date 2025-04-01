@@ -12,8 +12,8 @@ import logging
 
 HOST = "0.0.0.0"  
 PORT = 6223
-CERTFILE = "cert.pem"
-KEYFILE = "key.pem"
+CERTFILE = "../p2pcerts/fullchain.pem"
+KEYFILE = "../p2pcerts/privkey.pem"
 BUFFER_SIZE = 4096
 MASTER_PEM = "master.pem"
 CONFIG_FILE = "db_conf.json"
@@ -70,7 +70,10 @@ def load_db_config():
 def create_tls_context():
     """Creates a TLS context."""
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    context.load_cert_chain(certfile=CERTFILE, keyfile=KEYFILE)
+    context.load_cert_chain(
+            certfile=CERTFILE,
+            keyfile=KEYFILE
+    )
     return context
 
 def generate_hash(identifier):
