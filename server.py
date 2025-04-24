@@ -3,12 +3,14 @@ import ssl
 import threading
 import hashlib
 import psycopg2
+import psycopg2.extras
 import bcrypt
 import json
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 import os
 import logging
+import ast
 
 HOST = "0.0.0.0"  
 PORT = 6223
@@ -43,17 +45,22 @@ def encrypt_data(data, key):
     iv = os.urandom(16)  # Generate a random initialization vector
     cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
     encryptor = cipher.encryptor()
-    ciphertext = encryptor.update(data.encode("utf-8")) + encryptor.finalize()
+
+    if isinstance(data, str):
+        print("str")
+        data = data.encode("utf-8")
+
+    ciphertext = encryptor.update(data) + encryptor.finalize()
     return iv + ciphertext  # Prepend IV to the ciphertext for later decryption
 
-def decrypt_data(encrypted_data, key):
+def decrypt_data(encrypted_data, key, raw_bytes=False):
     """Decrypt data using AES-256."""
     iv = encrypted_data[:16]  # Extract the IV
     ciphertext = encrypted_data[16:]  # Extract the ciphertext
     cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
     decryptor = cipher.decryptor()
     decrypted_data = decryptor.update(ciphertext) + decryptor.finalize()
-    return decrypted_data.decode("utf-8")
+    return decrypted_data if raw_bytes else decrypted_data.decode("utf-8")
 
 def load_db_config():
     """Loades the db config"""
@@ -207,7 +214,7 @@ def handle_initiate(username, recipiant_ip, recipiant_port):
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
     try:
-        with socket.create_connection((recipiant_ip, recipiant_port), timeout=30) as sock:
+        with socket.create_connection((recipiant_ip, recipiant_port), timeout=10) as sock:
             with context.wrap_socket(sock, server_hostname=recipiant_ip) as secure_socket:
                 print(f"[INITIATE] Connection established with {recipiant_ip}")
                 data = secure_socket.recv(BUFFER_SIZE).decode("utf-8")
@@ -301,7 +308,7 @@ def handle_remove_friend(username, friend_username):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM friends WHERE (requester = %s AND addresse = %s) OR (requester = %s AND addresse = %s) AND status = 'accepted'",
+                "DELETE FROM friends WHERE ((requester = %s AND addresse = %s) OR (requester = %s AND addresse = %s)) AND status = 'accepted'",
                 (username, friend_username, friend_username, username)
             )
             if cur.rowcount == 0:
@@ -408,130 +415,261 @@ def handle_send_friend(username, friend_username):
 def log(endpoint, addr):
     logging.info(endpoint, extra={"ip": addr})
 
+def handle_check_friends(username, friend_username):
+    """Handles CHECK-FRIEND endpoint"""
+    db_conn = connect_to_db()
+    if not db_conn:
+        return "ERROR: Database connection failed"
+
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute("SELECT requester, addresse, status FROM friends "
+                        "WHERE ((requester = %s AND addresse = %s) OR (requester = %s AND addresse = %s))",
+                        (username, friend_username, friend_username, username)
+            )
+            result = cur.fetchone()
+
+            if not result:
+                print(f"{result}")
+                return "ERROR: Relationship between friends not found"
+
+            requester, addresse, status = result
+
+            if status == 'accepted':
+                return "CHECK-FRIENDS SUCCESS"
+            else:
+                return "CHECK-FRIENDS FAIL: PENDING"
+    except psycopg2.Error as e:
+        print(f"Database query error: {e}")
+        return "ERROR: Database query fail"
+    finally:
+        db_conn.close()
+
+def handle_facilitate_meta(username, friend_username, checksum, filename, extension):
+    """Handles FACILITATE endpoint"""
+    db_conn = connect_to_db()
+    if not db_conn:
+        return "ERROR: Database connection failed"
+
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute("SELECT requester, addresse, status FROM friends "
+                        "WHERE ((requester = %s AND addresse = %s) OR (requester = %s AND addresse = %s))",
+                        (username, friend_username, friend_username, username)
+            )
+            result = cur.fetchone()
+            
+            if not result:
+                print(f"{result}")
+                return "ERROR: Relationship between friends not found"
+
+
+            cur.execute("INSERT INTO relay(sender, receiver, checksum, filename, extension) "
+                        "VALUES(%s, %s, %s, %s, %s)",
+                        (username, friend_username, int(checksum), filename, extension)
+            )
+            db_conn.commit()
+
+            response = "FACILITATE SUCCESS"
+            return response
+    except psycopg2.Error as e:
+        print(f"Database query error: {e}")
+        return "ERROR: Database query fail"
+    finally:
+        db_conn.close()
+
+def handle_facilitate_dump(conn, username, filename):
+    """Handles the FACILITATE-DUMP endpoint""";
+    db_conn = connect_to_db()
+    if not db_conn:
+        return "ERROR: Database connection failed"
+
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute("SELECT sender, filename FROM relay "
+                        "WHERE (sender = %s AND filename = %s)",
+                        (username, filename)
+            )
+            result = cur.fetchone()
+            
+            if not result:
+                response = "ERROR: database returned nothing"
+
+            conn.sendall("ACTUAL SUCCESS")
+
+            response = "test success"
+            return response
+    except psycopg2.Error as e:
+        print(f"Database query error: {e}")
+        return "ERROR: Database query fail"
+    finally:
+        db_conn.close()
+
 def handle_client(conn, addr):
     """Handles an incoming client connection."""
     try:
         print(f"Connection established with {addr}")
 
-        data = conn.recv(BUFFER_SIZE).decode("utf-8").strip()
-
-        if not data:
-            response = "ERROR: No data receivedEOF"
-            conn.sendall(response.encode("utf-8"))
+        raw_data = conn.recv(BUFFER_SIZE)
+        if not raw_data:
+            conn.sendall(b"ERROR: No data receivedEOF")
             return
 
-        print(f"Chunk: {data}")
+        # Peek at the endpoint name in raw bytes
+        endpoint = raw_data.split(b' ', 1)[0].decode("utf-8").upper()
 
-        parts = data.split()
-        endpoint = parts[0].upper()
+        if endpoint == "FACILITATE":
+            log(endpoint, addr)
 
-        if endpoint == "GET":
-            log(endpoint, addr)
-            username = parts[1]
-            response = handle_get(username)
-        elif endpoint == "INITIATE":
-            log(endpoint, addr)
-            username = parts[1]
-            recipiant_ip = parts[4]
-            recipiant_port = parts[5]
-            response = handle_initiate(username, recipiant_ip, recipiant_port)
-        elif endpoint == "LOGIN":
-            log(endpoint, addr)
-            print(f"length of parts: {len(parts)}")
-            if len(parts) < 6:
-                response = "ERROR: Invalid LOGIN payload formatEOF"
+            # Split only the first 6 times: "FACILITATE user friend checksum None None None <binary>"
+            header_parts = raw_data.split(b' ', 6)
+            if len(header_parts) < 7:
+                response = "ERROR: invalid FACILITATE packet format"
             else:
-                _, username, password, identifier, ip, port, *extra = parts
-                hashed_identifier = generate_hash(identifier)
-                if not hashed_identifier:
-                    response = "ERROR: Server configuration issueEOF"
-                else:
-                    response = handle_login(username, password, hashed_identifier) + "EOF"
-        elif endpoint == "REGISTER":
-            log(endpoint, addr)
-            if len(parts) < 6:
-                response = "ERROR: Invalid REGISTER payload formatEOF"
-            else:
-                _, username, password, identifier, ip, port, *extra = parts
-                settings_raw = "".join(extra)
-                try:
-                    settings_json = json.loads(settings_raw)
-                except json.JSONDecodeError:
-                    response = "Error: json is bad"
-                hashed_identifier = generate_hash(identifier)
-                if not hashed_identifier:
-                    response = "ERROR: Server configuration issueEOF"
-                else:
-                    response = handle_register(username, password, hashed_identifier, ip, port, json.dumps(settings_json)) + "EOF"
-        elif endpoint == "GET-SETTINGS":
-            log(endpoint, addr)
-            username = parts[1]
-            response = handle_get_settings(username)
-        elif endpoint == "UPDATE-SETTINGS":
-            log(endpoint, addr)
-            if len(parts) < 3:
-                response = "Error: invalid update settings packet format"
-            else:
-                _, username, _, _, _, _, *extra = parts
-                settings_raw = "".join(extra)
-                settings_fixed = settings_raw.strip('"')
-                settings_fixed = settings_fixed.replace("'", "\"")
-                try:
-                    settings_json = json.loads(settings_fixed)
-                    print(settings_json)
-                    response = handle_update_settings(username, settings_json)
-                except json.JSONDecodeError:
-                    response = "Error: json is bad"
-        elif endpoint == "SEND-FRIEND":
-            #log(endpoint, addr)
-            if len(parts) < 2:
-                 response = "ERROR: invalid SEND-FRIEND packet format"
-            else:
-                username = parts[1]
-                friend_username = parts[6]
-
-                # Check if a pending request exists from friend_username -> username
-                db_conn = connect_to_db()
-                if not db_conn:
-                    response = "ERROR: Database connection failed"
-                else:
-                    try:
-                        with db_conn.cursor() as cur:
-                            cur.execute(
-                                "SELECT status FROM friends WHERE requester = %s AND addresse = %s AND status = 'pending'",
-                                (friend_username, username)
-                                )
-                            result = cur.fetchone()
-                            if result:
-                                # If a pending request exists, accept it
-                                log("ACCEPT-FRIEND", addr)
-                                response = handle_accept_friend(username, friend_username)
-                            else:
-                                # Otherwise, send a new request
-                                log("SEND-FRIEND", addr)
-                                response = handle_send_friend(username, friend_username)
-                    except psycopg2.Error as e:
-                        print(f"Database query error: {e}")
-                        response = "ERROR: Database query failed"
-                    finally:
-                        db_conn.close()
-        elif endpoint == "REMOVE-FRIEND":
-            log(endpoint, addr)
-            if len(parts) < 2:
-                response = "ERROR: invalid REMOVE-FRIEND packet format"
-            else:
-                username = parts[1]
-                friend_username = parts[6]
-                response = handle_remove_friend(username, friend_username)
-        elif endpoint == "LIST-FRIENDS":
-            log(endpoint, addr)
-            if len(parts) < 1:
-                response = "ERROR: invalid LIST-FRIENDS packet format"
-            else:
-                username = parts[1]
-                response = handle_list_friends(username)
+                username = header_parts[1].decode("utf-8")
+                friend_username = header_parts[2].decode("utf-8")
+                checksum = header_parts[3].decode("utf-8")
+                file_bytes = header_parts[6]  # This is raw binary content
+                print(type(file_bytes))
+                response = handle_facilitate(username, friend_username, checksum, file_bytes)
         else:
-            response = "ERROR: Unknown error/invalid packet format"
+            # Everything else uses the usual text decoding logic
+            data = raw_data.decode("utf-8").strip()
+            print(f"Chunk: {data}")
+
+            parts = data.split()
+            endpoint = parts[0].upper()
+
+            if endpoint == "GET":
+                log(endpoint, addr)
+                username = parts[1]
+                response = handle_get(username)
+            elif endpoint == "INITIATE":
+                log(endpoint, addr)
+                username = parts[1]
+                recipiant_ip = parts[4]
+                recipiant_port = parts[5]
+                response = handle_initiate(username, recipiant_ip, recipiant_port)
+            elif endpoint == "LOGIN":
+                log(endpoint, addr)
+                print(f"length of parts: {len(parts)}")
+                if len(parts) < 6:
+                    response = "ERROR: Invalid LOGIN payload formatEOF"
+                else:
+                    _, username, password, identifier, ip, port, *extra = parts
+                    hashed_identifier = generate_hash(identifier)
+                    if not hashed_identifier:
+                        response = "ERROR: Server configuration issueEOF"
+                    else:
+                        response = handle_login(username, password, hashed_identifier)
+            elif endpoint == "REGISTER":
+                log(endpoint, addr)
+                if len(parts) < 6:
+                    response = "ERROR: Invalid REGISTER payload formatEOF"
+                else:
+                    _, username, password, identifier, ip, port, *extra = parts
+                    settings_raw = "".join(extra)
+                    try:
+                        settings_json = json.loads(settings_raw)
+                    except json.JSONDecodeError:
+                        response = "Error: json is bad"
+                    hashed_identifier = generate_hash(identifier)
+                    if not hashed_identifier:
+                        response = "ERROR: Server configuration issueEOF"
+                    else:
+                        response = handle_register(username, password, hashed_identifier, ip, port, json.dumps(settings_json))
+            elif endpoint == "GET-SETTINGS":
+                log(endpoint, addr)
+                username = parts[1]
+                response = handle_get_settings(username)
+            elif endpoint == "UPDATE-SETTINGS":
+                log(endpoint, addr)
+                if len(parts) < 3:
+                    response = "Error: invalid update settings packet format"
+                else:
+                    _, username, _, _, _, _, *extra = parts
+                    settings_raw = "".join(extra)
+                    settings_fixed = settings_raw.strip('"')
+                    settings_fixed = settings_fixed.replace("'", "\"")
+                    try:
+                        settings_json = json.loads(settings_fixed)
+                        print(settings_json)
+                        response = handle_update_settings(username, settings_json)
+                    except json.JSONDecodeError:
+                        response = "Error: json is bad"
+            elif endpoint == "SEND-FRIEND":
+                if len(parts) < 2:
+                    response = "ERROR: invalid SEND-FRIEND packet format"
+                else:
+                    username = parts[1]
+                    friend_username = parts[6]
+
+                    db_conn = connect_to_db()
+                    if not db_conn:
+                        response = "ERROR: Database connection failed"
+                    else:
+                        try:
+                            with db_conn.cursor() as cur:
+                                cur.execute(
+                                    "SELECT status FROM friends WHERE requester = %s AND addresse = %s AND status = 'pending'",
+                                    (friend_username, username)
+                                )
+                                result = cur.fetchone()
+                                if result:
+                                    log("ACCEPT-FRIEND", addr)
+                                    response = handle_accept_friend(username, friend_username)
+                                else:
+                                    log("SEND-FRIEND", addr)
+                                    response = handle_send_friend(username, friend_username)
+                        except psycopg2.Error as e:
+                            print(f"Database query error: {e}")
+                            response = "ERROR: Database query failed"
+                        finally:
+                            db_conn.close()
+            elif endpoint == "REMOVE-FRIEND":
+                log(endpoint, addr)
+                if len(parts) < 2:
+                    response = "ERROR: invalid REMOVE-FRIEND packet format"
+                else:
+                    username = parts[1]
+                    friend_username = parts[6]
+                    response = handle_remove_friend(username, friend_username)
+            elif endpoint == "LIST-FRIENDS":
+                log(endpoint, addr)
+                if len(parts) < 1:
+                    response = "ERROR: invalid LIST-FRIENDS packet format"
+                else:
+                    username = parts[1]
+                    response = handle_list_friends(username)
+            elif endpoint == "CHECK-FRIENDS":
+                log(endpoint, addr)
+                if len(parts) < 3:
+                    response = "ERROR: invalid CHECK-FRIENDS packet format"
+                else:
+                    username = parts[1]
+                    friend_username = parts[2]
+                    response = handle_check_friends(username, friend_username)
+            elif endpoint == "FACILITATE-META":
+                log(endpoint, addr)
+                if len(parts) < 6:
+                    response = "ERROR: invalid FACILITATE-RECEIVE packet format"
+                else:
+                    username = parts[1]
+                    friend_username = parts[2]
+                    checksum = parts[3]
+                    filename = parts[4]
+                    extension = parts[5]
+                    response = handle_facilitate_meta(username, friend_username, checksum, filename, extension)
+            elif endpoint == "FACILITATE-DUMP":
+                log(endpoint, addr)
+                if len(parts) < 3:
+                    response = "ERROR: invalid FACILITATE-DUMP pavket format"
+                else:
+                    username = parts[1]
+                    filename = parts[2]
+                    response = handle_facilitate_dump(conn, username, filename)
+            else:
+                response = "ERROR: Unknown error/invalid packet format"
 
         conn.sendall(response.encode("utf-8"))
         print(f"Response sent to {addr}: {response}")
@@ -547,7 +685,7 @@ def handle_client(conn, addr):
         finally:
             conn.close()
             print(f"Connection with {addr} closed.")
-  
+ 
 def start_server():
     """Starts the server."""
     context = create_tls_context()
